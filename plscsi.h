@@ -99,9 +99,15 @@ typedef unsigned int UINT;
 **  Choose which .cpp to link.
 **/
 
+#ifdef __APPLE__
+#define STUC STUC
+#endif
+
 #ifndef _WIN32
 #ifndef __MSDOS__
+#ifndef __APPLE__
 #define SGIO SGIO
+#endif
 #endif
 #endif
 
@@ -141,6 +147,7 @@ typedef struct Scsi Scsi;
 typedef struct ScsiCommandLine ScsiCommandLine;
 typedef struct Sgio Sgio;
 typedef struct Sptx Sptx;
+typedef struct Stuc Stuc;
 
 /**
 **  Link with "dosaspi.cpp" or "winaspi.cpp".
@@ -218,6 +225,24 @@ extern INT scsiGetLength(Scsi *, INT);
 extern int scsiGetSense(Scsi *, char *, int, int);
 extern int scsiReadName(Scsi *, char *, int);
 extern int scsiSwallowArg(Scsi *, char const *);
+
+/**
+**  Link with "stuc.cpp".
+**/
+
+#ifdef STUC
+extern Stuc * newStuc(void);
+extern void stucSetErr(Stuc *, FILE *);
+extern void stucClose(Stuc *);
+extern int stucOpen(Stuc *, char const *);
+extern int stucLimitSense(Stuc *, int);
+extern int stucLimitSeconds(Stuc *, INT, INT);
+extern INT stucSay(Stuc *, char const *, int, char *, INT, int);
+extern INT stucGetLength(Stuc *, INT);
+extern int stucGetSense(Stuc *, char *, int, int);
+extern int stucReadName(Stuc *, char *, int);
+extern int stucSwallowArg(Stuc *, char const *);
+#endif
 
 /**
 **  Link with "sgio.cpp".

@@ -115,7 +115,9 @@ Sgio * newSgio(void)
 
     sgio->theErrFile = stderr;
 
-    sgio->theOpenMode = O_RDWR; /* O_RDONLY often works */
+//  sgio->theOpenMode = O_RDWR; /* O_RDONLY often works */
+//  sgio->theOpenMode = O_RDONLY|O_NONBLOCK;
+    sgio->theOpenMode = O_NONBLOCK;
     sgio->theFileDescriptor = -1;
     sgio->theSgVersionNum = 0; /* 0 = unknown */
 

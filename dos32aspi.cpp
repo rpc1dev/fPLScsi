@@ -1,8 +1,9 @@
 /**
-**  dosaspi.cpp
-**  Saturday. September 21, 2002
+**  dos32aspi.cpp
+**  Wednesday. October 15, 2003
 **
-**  Talk thru an Aspi connection of Microsoft DOS.
+**  Talk thru an Aspi connection of Microsoft DOS 
+**  using an ASPI library in 32 bit protected mode.
 **
 **  Grep views include:
 **
@@ -19,6 +20,7 @@
 #include <stdlib.h> /* calloc ... */
 #include <string.h> /* memset ... */
 
+
 /**
 **  Link with the *.c* of ../plscsi/.
 **/
@@ -26,28 +28,41 @@
 #include "plscsi.h"
 
 /**
-**  Define some units.
-**/
-
-#define Ki      1024 /* x1024 = x400 = 1 << 10 */
-
-/**
 **  Link with Microsoft Windows and the Adaptec SDK.
 **/
 
 #ifdef DOSASPI
 
-#ifndef DJGPP	/* We use dos32aspi with DJPGG */
-
+#include <sys/types.h>
+#include <sys/movedata.h>
+#include <dpmi.h>
+#include <go32.h>
 #include <dos.h>
 #include "dosaspi.h"
+
+/**
+**  Define some units.
+**/
+
+#define Ki      1024 /* x1024 = x400 = 1 << 10 */
+
 
 /* Name the struct (SRB_Cmd SRB_Status SRB_HaId) common to all SRB's. */
 
 typedef SRB_Abort SRB;
 
 char const * theAspiLibName = "SCSIMGR$";
-ScsiMgr * theScsiMgr;
+DWORD theScsiMgr;           /* SEGMENT:OFFSET */
+
+/* Conventional Memory Buffers, allocated once, *NEVER* freed */
+
+#define CM_srbSize (sizeof(SRB_ExecSCSICmd_Max))
+DWORD   CM_srb = NULL;      /* SEGMENT:OFFSET */
+int     CM_srbSelector = 0;
+#define CM_BufSize (64*Ki)  /* 64 KB should be enough for everybody */
+DWORD   CM_Buffer = NULL;   /* SEGMENT:OFFSET */
+int     CM_BufSelector = 0;
+DWORD   SRB_BufLenCopy = 0; /* We need to keep a copy of this */
 
 /**
 **  Describe a DOS Aspi connection to a device.
@@ -107,11 +122,11 @@ struct Aspi /* connection */
 **  Return zero if not ok, else the bytes read.
 **/
 
-long loadLibrary(char const * name)
+DWORD loadLibrary(char const * name)
     {
-    long result = NULL;
-    struct REGPACK stackedRp;
-    struct REGPACK * rp = &stackedRp;
+    DWORD result = NULL;
+    __dpmi_regs stackedRp;
+    __dpmi_regs * rp = &stackedRp;
     unsigned short handle = 0;
     char stackedChars[8 + 1];
     char * chars = &stackedChars[0];
@@ -125,64 +140,236 @@ long loadLibrary(char const * name)
     copyLength = (strlen(name) + 1);
     if (!(copyLength <= sizeof stackedChars)) return 0;
     (void) memmove(chars, name, copyLength);
+
+    /* Copy to DOS memory */
+
     chars[copyLength] = '\0';
+    dosmemput(chars, copyLength+1, __tb);
 
     /* Only mostly zero the bits of the Cpu. */
 
-    rp->r_ds = _SS;
-    rp->r_es = _SS;
-    rp->r_flags = 0x0200; /* x200 = I flag */
+    rp->x.ds = __tb >> 4;
+    rp->x.es = __tb >> 4;
+    rp->x.flags = 0x0200; /* x200 = I flag */   
 
     /* Open the Dos Aspi device. */
 
-    rp->r_ax = 0x3D00; /* x21:3D00 = open to read */
-    rp->r_dx = ((unsigned short) chars);
-    intr(0x21, rp);
-    if ((rp->r_flags & 0x0001) == 0) /* x1 = C flag */
+    rp->x.ax = 0x3D00; /* x21:3D00 = open to read */
+    rp->x.dx = __tb & 0x0f;
+    __dpmi_int(0x21, rp);
+
+    if ((rp->x.flags & 0x0001) == 0) /* x1 = C flag */
         {
-        handle = rp->r_ax;
+        handle = rp->x.ax;
 
         /* Read the Dos Aspi entry point via an Ioctl. */
 
-        rp->r_ax = 0x4402; /* x21:4402 = ioctl read */
-        rp->r_bx = handle;
-        rp->r_cx = sizeof result;
-        rp->r_dx = ((unsigned short) &result);
-        intr(0x21, rp);
-        if ((rp->r_flags & 0x0001) != 0) /* x1 = C flag */
+        rp->x.ax = 0x4402; /* x21:4402 = ioctl read */
+        rp->x.bx = handle;
+        rp->x.cx = sizeof result;
+        rp->x.dx = __tb & 0x0f;		// ((unsigned short) &result);
+        __dpmi_int(0x21, rp);
+        if ((rp->x.flags & 0x0001) != 0) /* x1 = C flag */
             {
-            (void) fprintf(stderr, "// r_flags = x%X\n", (int) rp->r_flags);
-            (void) fprintf(stderr, "// r_ax = x%X\n", (int) rp->r_ax);
+            (void) fprintf(stderr, "// x.flags = x%X\n", (int) rp->x.flags);
+            (void) fprintf(stderr, "// x.ax = x%X\n", (int) rp->x.ax);
             }
-        else if (rp->r_ax != 0x0004) /* r_ax = count of bytes transferred */
+        else if (rp->x.ax != 0x0004) /* r_ax = count of bytes transferred */
             {
-            if (rp->r_ax == 0x4402) /* x4402 = no change */
+            if (rp->x.ax == 0x4402) /* x4402 = no change */
                 {
                 ; /* e.g. WinMe */
                 }
             else
                 {
-                (void) fprintf(stderr, "// r_flags = x%X\n", (int) rp->r_flags);
-                (void) fprintf(stderr, "// r_ax = x%X\n", (int) rp->r_ax);
+                (void) fprintf(stderr, "// x.flags = x%X\n", (int) rp->x.flags);
+                (void) fprintf(stderr, "// x.ax = x%X\n", (int) rp->x.ax);
                 }
             }
+            
+        dosmemget(__tb,4,&result);
 
         /* Close the opened Dos Aspi device. */
 
-        rp->r_ax = 0x3E00; /* x21:3E = close */
-        rp->r_bx = handle;
-        intr(0x21, rp);
-        if ((rp->r_flags & 0x0001) != 0) /* x1 = C flag */
+        rp->x.ax = 0x3E00; /* x21:3E = close */
+        rp->x.bx = handle;
+        __dpmi_int(0x21, rp);
+        if ((rp->x.flags & 0x0001) != 0) /* x1 = C flag */
             {
-            (void) fprintf(stderr, "// r_flags = x%X\n", (int) rp->r_flags);
-            (void) fprintf(stderr, "// r_ax = x%X\n", (int) rp->r_ax);
+            (void) fprintf(stderr, "// x.flags = x%X\n", (int) rp->x.flags);
+            (void) fprintf(stderr, "// x.ax = x%X\n", (int) rp->x.ax);
             }
+        }
+
+    if (result)
+        {
+                
+        /* Allocate Conventional Memory Buffers */
+        
+        if ( (CM_srb == NULL) &&
+             ((CM_srb = ((DWORD) __dpmi_allocate_dos_memory((CM_srbSize+15)>>4, 
+              &CM_srbSelector)<<16)) == -1) )
+            {
+            CM_srb = NULL;
+            (void) fprintf(stderr, "// CM srb allocation failure.\n");
+            return NULL;
+            }
+        
+        if ( (CM_Buffer == NULL) &&
+             ((CM_Buffer = ((DWORD) __dpmi_allocate_dos_memory((CM_BufSize+15)>>4,
+              &CM_BufSelector)<<16)) == -1) )
+            {
+            CM_Buffer = NULL;
+            (void) fprintf(stderr, "// CM Buffer allocation failure.\n");
+            return NULL;
+            }
+            
         }
 
     /* Return the bytes read. */
 
     return result;
     }
+
+/**
+** CallScsiMgr
+**
+** Return NULL if not OK, else return the conventional memory duplicata of the SRB
+**/
+
+int CallScsiMgr(BYTE* srb, FILE * fi = NULL)
+    {
+    __dpmi_regs r;
+
+    if ((srb == NULL) || (CM_srb == NULL) || (CM_Buffer == NULL)) return -1;
+
+    SRB_ExecSCSICmd * es = (SRB_ExecSCSICmd*)srb;
+
+    (void) memset(&r, '\0', sizeof r);
+    r.x.ds = CM_srb >> 16;
+    r.x.es = CM_srb >> 16;
+    r.x.cs = theScsiMgr>>16;
+    r.x.ip = theScsiMgr&0xffff;
+    
+    /* Decide how much data we need to copy */
+    
+    switch(*srb) /* SRB_Cmd */
+        {
+   
+        case SC_HA_INQUIRY:
+        
+            /* Copy the SRB Command */
+        
+            dosmemput(srb, sizeof(SRB_HAInquiry), CM_srb>>12);
+            if (__dpmi_simulate_real_mode_procedure_retf_stack(&r, sizeof(DWORD)/2, &CM_srb))
+                return -1;
+            break;
+
+	case SC_EXEC_SCSI_CMD:
+
+            /* Filter out command parameters we don't want */
+
+            if (es->SRB_PostProc) es->SRB_Status = SS_INVALID_SRB;
+	    if (es->SRB_BufLen > CM_BufSize) es->SRB_Status = SS_BUFFER_TO_BIG;
+	    
+	    /*
+	     * Check if a buffer command is already going on. If really reentrant,
+	     * we should probably use a stack, but what the heck
+	     */ 
+	    
+	    if (SRB_BufLenCopy) 
+	        es->SRB_Status = SS_ASPI_IS_BUSY;
+	    else
+	        SRB_BufLenCopy = es->SRB_BufLen;
+	    
+	    /* Copy the SRB Command and set the Buffer pointer to our CM Buffer */
+
+	    dosmemput(srb, sizeof(SRB_ExecSCSICmd_Max), CM_srb>>12);
+            dosmemget(CM_srb>>12, sizeof(SRB_ExecSCSICmd_Max), srb);
+	    
+	    dosmemput(&CM_Buffer, 4, (CM_srb>>12)+offsetof(SRB_ExecSCSICmd, SRB_BufPointer));
+	    if (es->SRB_Flags | SRB_DIR_OUT)
+	        _dosmemputb(es->SRB_BufPointer, SRB_BufLenCopy, CM_Buffer>>12);
+
+	    /* Don't execute commands with improper SRB_Status */   
+	       
+	    if ((es->SRB_Status) || (__dpmi_simulate_real_mode_procedure_retf_stack 
+	            (&r, sizeof(DWORD)/2, &CM_srb)))
+                return -1;
+                
+            break;
+            
+        default:
+            return -1;
+            break;
+            
+        }
+        
+	return 0;
+}
+
+
+/**
+** GetFromScsiMgr
+**
+**/
+
+int GetFromScsiMgr (BYTE* srb, FILE * fi = NULL)
+{
+    if ((srb == NULL) || (CM_srb == NULL) || (CM_Buffer == NULL)) return -1;
+
+    BYTE* BufPointerCopy = NULL;
+    BYTE  SRB_Status = 0;
+    SRB_ExecSCSICmd * es = (SRB_ExecSCSICmd*)srb;
+
+    switch(*srb) /* SRB_Cmd */
+        {
+   
+        case SC_HA_INQUIRY:
+        
+      	    /* Copy the SRB back from CM */
+
+            dosmemget(CM_srb>>12, sizeof(SRB_HAInquiry), srb);
+            break;
+            
+      	case SC_EXEC_SCSI_CMD:
+
+            /* Dont do anything is the status is still pending */
+      	
+      	    dosmemget(CM_srb>>12, 1, &SRB_Status);
+      	    if (SRB_Status)      	
+      	        {
+      	        	
+      	        /* Copy the SRB back from CM */
+
+                BufPointerCopy = es->SRB_BufPointer;
+      	        dosmemget(CM_srb>>12, sizeof(SRB_ExecSCSICmd_Max), srb);
+      	        es->SRB_BufPointer = BufPointerCopy;
+
+      	        /* Copy the buffer back from CM */
+      	 
+                if ((es->SRB_Status) && (es->SRB_Flags | SRB_DIR_IN) && (SRB_BufLenCopy))
+                    {
+	            dosmemget(CM_Buffer>>12, SRB_BufLenCopy, es->SRB_BufPointer);
+	            SRB_BufLenCopy = 0;
+	            }
+
+                }
+            else
+                if (fi) fprintf(fi, "GetFromScsiMgr: SS_PENDING\n");
+                
+            break;
+            
+        default:
+            if (fi) fprintf(fi, "GetFromScsiMgr: Command not implemented yet\n");
+            return -1;
+            break;
+            
+        }
+    return 0;
+
+}
+
 
 /**
 **  Startup.
@@ -211,7 +398,7 @@ static int aspiStartup(Aspi * aspi)
 
     /* Link the library per se. */
 
-    theScsiMgr = (ScsiMgr *) loadLibrary(theAspiLibName);
+    theScsiMgr = loadLibrary(theAspiLibName);
     if (theScsiMgr == NULL)
         {
         FILE * fi = aspi->theErrFile;
@@ -233,6 +420,7 @@ static int aspiStartup(Aspi * aspi)
 
 int aspiExamine(Aspi * aspi, int ha)
     {
+    DWORD CMsrb;
     if (aspi == NULL) return -1;
     if (ha != (BYTE) ha) return -1;
 
@@ -265,7 +453,10 @@ int aspiExamine(Aspi * aspi, int ha)
 
     /* Call Aspi. */
 
-    (theScsiMgr)((BYTE FAR *) srb);
+    FILE * fi = aspi->theErrFile;
+
+    if (CallScsiMgr ((BYTE*) srb, fi)) return -1;
+    if (GetFromScsiMgr((BYTE*) srb, fi)) return -1;
 
     /* Fail else fall through. */
 
@@ -531,6 +722,7 @@ static int aspiSetCommand(Aspi * aspi,
 
 static void aspiCall(Aspi * aspi)
     {
+    DWORD CM_srb;
     AspiCommand * ac = &aspi->theAspiCommand;
     SRB_ExecSCSICmd * es = &ac->theSRB_ExecSCSICmd; /* es = escSrb = SRB_ExecSCSICmd */
     volatile BYTE * pvb = &es->SRB_Status;
@@ -540,9 +732,16 @@ static void aspiCall(Aspi * aspi)
     es->SRB_Lun = aspi->theLun;
 
     *pvb = SS_PENDING; /* x00 = SS_PENDING */
-    (theScsiMgr)((BYTE FAR *) es);
-    while (*pvb == SS_PENDING)
-        ;
+    
+    FILE * fi = aspi->theErrFile;
+        
+    if (CallScsiMgr ((BYTE*) es, fi))
+        return;
+     
+    do
+        GetFromScsiMgr((BYTE*) es, fi);
+    while (*pvb == SS_PENDING);
+
     }
 
 /**
@@ -860,8 +1059,6 @@ int aspiSwallowArg(Aspi * aspi, char const * arg)
 
     return -1;
     }
-
-#endif /* DJGPP */
 
 #endif /* DOSASPI */
 

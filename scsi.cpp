@@ -16,6 +16,10 @@
 **      grep "^[A-Za-z_]"   // routines
 **/
 
+#ifndef CHECK_CDB_LENGTH
+#define CHECK_CDB_LENGTH 1 // default is to validate CDB length 
+#endif
+
 /**
 **  Link with standard C libraries.
 **/
@@ -38,6 +42,9 @@
 struct Scsi /* connection */
     {
     void *          theConnection;
+#ifdef STUC
+    Stuc *          theStuc;            /* MacOS X */
+#endif
 #ifdef SGIO
     Sgio *          theSgio;            /* Linux since kernel 2.4 */
 #endif
@@ -66,6 +73,9 @@ Scsi * newScsi(void)
     /* Say closed but allow open. */
 
     scsi->theConnection = NULL;
+#ifdef STUC
+    scsi->theStuc = newStuc();
+#endif
 #ifdef SGIO
     scsi->theSgio = newSgio();
 #endif
@@ -89,6 +99,9 @@ Scsi * newScsi(void)
 void scsiSetErr(Scsi * scsi, FILE * fi)
     {
     if (scsi == NULL) return;
+#ifdef STUC
+    stucSetErr(scsi->theStuc, fi);
+#endif
 #ifdef SGIO
     sgioSetErr(scsi->theSgio, fi);
 #endif
@@ -107,6 +120,9 @@ void scsiSetErr(Scsi * scsi, FILE * fi)
 void scsiClose(Scsi * scsi)
     {
     if (scsi == NULL) return;
+#ifdef STUC
+    stucClose(scsi->theStuc);
+#endif
 #ifdef SGIO
     sgioClose(scsi->theSgio);
 #endif
@@ -129,6 +145,13 @@ int scsiOpen(Scsi * scsi, char const * name)
     {
     if (scsi == NULL) return -1;
     scsi->theConnection = NULL;
+#ifdef STUC
+    if (stucOpen(scsi->theStuc, name) == 0)
+        {
+        scsi->theConnection = scsi->theStuc;
+        return 0;
+        }
+#endif
 #ifdef SGIO
     if (sgioOpen(scsi->theSgio, name) == 0)
         {
@@ -162,6 +185,13 @@ int scsiOpen(Scsi * scsi, char const * name)
 int scsiLimitSense(Scsi * scsi, int maxSenseLength)
     {
     if (scsi == NULL) return -1;
+#ifdef STUC
+    if (scsi->theConnection == scsi->theStuc)
+        {
+        int exitInt = stucLimitSense(scsi->theStuc, maxSenseLength);
+        return exitInt;
+        }
+#endif
 #ifdef SGIO
     if (scsi->theConnection == scsi->theSgio)
         {
@@ -197,6 +227,13 @@ int scsiLimitSense(Scsi * scsi, int maxSenseLength)
 int scsiLimitSeconds(Scsi * scsi, INT s, INT ns)
     {
     if (scsi == NULL) return -1;
+#ifdef STUC
+    if (scsi->theConnection == scsi->theStuc)
+        {
+        int exitInt = stucLimitSeconds(scsi->theStuc, s, ns);
+        return exitInt;
+        }
+#endif
 #ifdef SGIO
     if (scsi->theConnection == scsi->theSgio)
         {
@@ -242,6 +279,68 @@ INT scsiSay(Scsi * scsi,
         char const * cdbChars, int cdbLength, char * dataChars, INT maxLength, int direction)
     {
     if (scsi == NULL) return -1;
+
+#if CHECK_CDB_LENGTH
+{
+int officialCDBLength;
+int i;
+static unsigned char CDBLength[256] =
+  {
+// 0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+   6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,  //  0  000
+   6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,  //  1
+  10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,  //  2  001
+  10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,  //  3
+  10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,  //  4  010
+  10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,  //  5
+  99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,  //  6  011
+  99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,98,  //  7
+  16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,  //  8  100
+  16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,  //  9
+  12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,  //  a  101
+  12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,  //  b
+  99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,  //  c  110
+  99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,  //  d
+  99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,  //  e  111
+  99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,99   //  f
+  };
+
+// compute the official CDB length
+officialCDBLength = CDBLength[(int) (cdbChars[0]&0xFF)];
+switch (officialCDBLength)
+  {
+case 99:  // reserved or vendor specific, assume it's OK.
+  officialCDBLength = cdbLength;
+  break;
+case 98:  // special case for the 7F command.
+  officialCDBLength = ( (unsigned char *) cdbChars)[7] + 8;
+  officialCDBLength = (officialCDBLength + 3) & ~3;
+  break;
+default:  // official length properly set
+  break;
+  }
+
+if (officialCDBLength != cdbLength)
+  { // probably a programming error, warn the developer!!!
+  fprintf(stderr, "=== PLEASE REPORT FOLLOWING ERROR ===\n");
+  fprintf(stderr, "CDB length should be %lu instead of %lu:\n", (unsigned long) officialCDBLength, (unsigned long) cdbLength);
+  cdbLength = officialCDBLength;
+  for (i = 0; i < cdbLength; i++)
+    {
+    fprintf(stderr, "%02X ",( (unsigned char *) cdbChars)[i]);
+    }
+  fprintf(stderr, "\n");
+  }
+}
+#endif
+
+#ifdef STUC
+    if (scsi->theConnection == scsi->theStuc)
+        {
+        int exitInt = stucSay(scsi->theStuc, cdbChars, cdbLength, dataChars, maxLength, direction);
+        return exitInt;
+        }
+#endif
 #ifdef SGIO
     if (scsi->theConnection == scsi->theSgio)
         {
@@ -276,6 +375,13 @@ INT scsiSay(Scsi * scsi,
 INT scsiGetLength(Scsi * scsi, INT elseLength)
     {
     if (scsi == NULL) return elseLength;
+#ifdef STUC
+    if (scsi->theConnection == scsi->theStuc)
+        {
+        int exitInt = stucGetLength(scsi->theStuc, elseLength);
+        return exitInt;
+        }
+#endif
 #ifdef SGIO
     if (scsi->theConnection == scsi->theSgio)
         {
@@ -315,6 +421,13 @@ INT scsiGetLength(Scsi * scsi, INT elseLength)
 int scsiGetSense(Scsi * scsi, char * chars, int charsLength, int elseLength)
     {
     if (scsi == NULL) return 0;
+#ifdef STUC
+    if (scsi->theConnection == scsi->theStuc)
+        {
+        int exitInt = stucGetSense(scsi->theStuc, chars, charsLength, elseLength);
+        return exitInt;
+        }
+#endif
 #ifdef SGIO
     if (scsi->theConnection == scsi->theSgio)
         {
@@ -354,6 +467,10 @@ int scsiReadName(Scsi * scsi, char * chars, int charsLength)
     if (scsi == NULL) return -1;
 
     int exitInt = 0;
+#ifdef STUC
+    exitInt = stucReadName(scsi->theStuc, chars, charsLength);
+    if (0 <= exitInt) return exitInt;
+#endif
 #ifdef SGIO
     exitInt = sgioReadName(scsi->theSgio, chars, charsLength);
     if (0 <= exitInt) return exitInt;
@@ -382,6 +499,10 @@ int scsiSwallowArg(Scsi * scsi, char const * arg)
     if (arg == NULL) return -1;
 
     int exitInt = -1;
+#ifdef STUC
+    int stucInt = stucSwallowArg(scsi->theStuc, arg);
+    if (0 <= stucInt) exitInt = 0;
+#endif
 #ifdef SGIO
     int sgioInt = sgioSwallowArg(scsi->theSgio, arg);
     if (0 <= sgioInt) exitInt = 0;

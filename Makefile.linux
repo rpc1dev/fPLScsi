@@ -1,0 +1,5 @@
+plscsi: *.c*
+	g++ -o plscsi -Wall *.c*
+
+sgio: *.c*
+	g++ -o sgio -Wall -DSCSI_STUB scsistub.cpp sgio.cpp

@@ -30,6 +30,11 @@
 #include <alloc.h> /* farcalloc ... */
 #endif
 
+#ifdef DJGPP /* Don't need this whole mumbo jumbo in 32 bit mode */
+#define farcalloc calloc
+#endif
+
+
 /**
 **  Link with the *.c* of ../plscsi/.
 **/
@@ -561,7 +566,7 @@ static void sclGuessPrintln(ScsiCommandLine * scl, FILE * fi)
 #if (_WIN32 || __MSDOS__)
     (void) fprintf(fi, "set PLSCSI=%s", scl->theName);
 #else
-    (void) fprintf(fi, "export PLSCSI=%s", scl->theName);
+    (void) fprintf(fi, "export PLSCSI='%s'", scl->theName);
 #endif
 
     int length = strlen(scl->theName);
@@ -727,7 +732,8 @@ void sclHexPrintln(FILE * fi, char const * dataChars, INT dataLength)
                 INT sameLength = 0x10;
                 while (sameLength <= tailLength)
                     {
-                    if (MEMCMP(wereTailChars, sameChars, 0x10) != 0) break;
+                    // DJGPP chokes if we don't cast to (void*) 
+                    if (MEMCMP((void*)wereTailChars, (void*)sameChars, 0x10) != 0) break;
                     sameChars = (const char *) TO_VOID_P(TO_INT(sameChars) + 0x10);
                     sameLength += 0x10;
                     }
@@ -1458,7 +1464,8 @@ INT sclSay(ScsiCommandLine * scl)
         char * inChars = scl->theInChars;
         char const * outChars = scl->theOutChars;
         INT dataLength = scl->theDataLength;
-        (void) MEMMOVE(inChars, outChars, dataLength);
+        // DJGPP chokes if we don't cast to (void*)
+        (void) MEMMOVE(inChars, (void*)outChars, dataLength);
 
         /* Say something. */
 

@@ -43,7 +43,7 @@ static void fprintUsageParagraph(FILE * fi)
 "Options: -hwl -vqpcyn -x $cdb -i $in -o $out\n"
 "Options: -d $length -a $page $offset -f $from -t $to\n"
 "Options: -X sense $n -X time $s $ns\n"
-"Options: -X dos -X aspi -X sptx -X spt -X sptd -X sgio\n"
+"Options: -X dos -X aspi -X sptx -X spt -X sptd -X sgio -X stuc\n"
         );
     }
 
